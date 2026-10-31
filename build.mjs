@@ -1,54 +1,35 @@
-/** Build static deployment with absolute SEO metadata; requires SITE_URL. No dependencies. */
-import fs from 'node:fs';
+/**
+ * Static publication helper. Usage: node build.mjs https://your-real-domain.com
+ * Creates dist/ with canonical URLs, Open Graph URLs, robots.txt and sitemap.xml.
+ * Running without a URL creates a preview build with NO invented canonical domain.
+ */
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
-const origin=(process.env.SITE_URL||'').replace(/\/$/,'');
-if(!/^https:\/\/[a-z\d.-]+(?::\d+)?(?:\/[^\s]*)?$/i.test(origin)){
-  console.error('Set SITE_URL to your confirmed HTTPS domain, e.g. SITE_URL=https://www.your-domain.co.il node build.mjs');
-  process.exit(1);
+import { fileURLToPath } from 'node:url';
+const cwd=path.dirname(fileURLToPath(import.meta.url));
+const dist=path.join(cwd,'dist');
+const arg=(process.argv[2]||'').trim().replace(/\/$/,'');
+let origin='';
+if(arg){const parsed=new URL(arg);if(parsed.protocol!=='https:'||!parsed.hostname.includes('.'))throw new Error('Please enter a genuine HTTPS domain, e.g. https://www.yourdomain.co.il');origin=parsed.origin}
+const keep=new Set(['assets','index.html','blog','autism-parent-guidance','parent-guidance-kiryat-ono','privacy','accessibility','terms','thanks']);
+await fs.rm(dist,{recursive:true,force:true});await fs.mkdir(dist,{recursive:true});
+async function copy(src,target){const stat=await fs.stat(src);if(stat.isDirectory()){await fs.mkdir(target,{recursive:true});for(const f of await fs.readdir(src))await copy(path.join(src,f),path.join(target,f));}else await fs.copyFile(src,target)}
+for(const name of keep)await copy(path.join(cwd,name),path.join(dist,name));
+const publicPaths=['/','/autism-parent-guidance/','/parent-guidance-kiryat-ono/','/blog/','/blog/parent-child-connection/','/blog/toddler-tantrums/','/blog/sleep-and-routines/'];
+const legalPaths=['/privacy/','/accessibility/','/terms/','/thanks/'];
+for(const urlPath of [...publicPaths,...legalPaths]){
+ const file=path.join(dist,urlPath.slice(1),'index.html');let html=await fs.readFile(file,'utf8');
+ if(origin){
+  const canonical=origin+urlPath;
+  html=html.replace('<!--SITE_CANONICAL-->',`<link rel="canonical" href="${canonical}"><meta property="og:url" content="${canonical}">`);
+  html=html.replace(/<meta property="og:image" content="(?:\.\/|\.\.\/)+assets\/images\/([^"]+)">/g,(_,n)=>`<meta property="og:image" content="${origin}/assets/images/${n}">`);
+  html=html.replace(/(<script type="application\/ld\+json">)([\s\S]*?)(<\/script>)/,(_,start,body,end)=>{
+   try {const data=JSON.parse(body);if(data['@type']==='BlogPosting'){data.mainEntityOfPage=canonical;data.image=origin+'/assets/images/'+({'/blog/parent-child-connection/':'blog-connection.webp','/blog/toddler-tantrums/':'blog-tantrums.webp','/blog/sleep-and-routines/':'blog-sleep.webp'}[urlPath]||'daniel-hero.webp')}else if(data['@graph']){data['@graph'][0].url=canonical;data['@graph'][0]['@id']=origin+'/#organization';data['@graph'][1].url=origin+'/#daniel-savir-hazan'}return start+JSON.stringify(data)+end}catch{return start+body+end}
+  });
+ }else html=html.replace('<!--SITE_CANONICAL-->','');
+ await fs.writeFile(file,html);
 }
-const base=new URL(origin);
-if(base.pathname!=='/' || base.search || base.hash){console.error('SITE_URL must contain only scheme and host.');process.exit(1);}
-const out=path.resolve('dist');
-fs.rmSync(out,{recursive:true,force:true});
-fs.mkdirSync(out,{recursive:true});
-const excluded=new Set(['dist','node_modules','.git']);
-function copy(dir,relative=''){
-  for(const e of fs.readdirSync(dir,{withFileTypes:true})){
-    if(excluded.has(e.name)||['generate.py','make_images.py','build.mjs','README.md'].includes(e.name))continue;
-    const rel=path.join(relative,e.name),abs=path.join(dir,e.name),dest=path.join(out,rel);
-    if(e.isDirectory()){fs.mkdirSync(dest,{recursive:true});copy(abs,rel);}
-    else if(e.name.endsWith('.html')){
-      let html=fs.readFileSync(abs,'utf8');
-      const getMeta=(n)=>(html.match(new RegExp(`<meta name="${n}" content="([^"]+)"`))||[])[1]||'';
-      const clean=(x)=>x.replaceAll('&amp;','&').replaceAll('&quot;','"');
-      const sitePath=getMeta('site-path');
-      const imgPath=getMeta('site-og-image');
-      if(!sitePath.startsWith('/'))throw new Error('Missing path: '+rel);
-      const pageUrl=origin+sitePath;
-      const pageTitle=clean((html.match(/<title>(.*?)<\/title>/)||[])[1]||'');
-      const desc=clean((html.match(/<meta name="description" content="([^"]+)"/ )||[])[1]||'');
-      const ogType=(html.match(/<meta property="og:type" content="([^"]+)"/ )||[])[1];
-      const person={"@type":"Person","@id":origin+'/#daniel',name:'דניאל סביר חזן',jobTitle:['עובדת סוציאלית קלינית','מדריכת הורים','מטפלת רגשית'],knowsAbout:['הדרכת הורים','הורות לילדים על הרצף האוטיסטי']};
-      const page={"@type":ogType==='article'?'BlogPosting':'WebPage',"@id":pageUrl+'#page',url:pageUrl,name:pageTitle,description:desc,inLanguage:'he-IL'};
-      if(ogType==='article'){
-        page.headline=pageTitle.split(' | ')[0];page.author={"@id":origin+'/#daniel'};page.image=origin+'/'+imgPath;
-      }
-      const graph=[person,page];
-      if(sitePath==='/'){
-        graph.push({"@type":"WebSite","@id":origin+'/#website',url:origin+'/',name:'דניאל סביר חזן | הדרכת הורים',inLanguage:'he-IL'});
-        graph.push({"@type":"Service","@id":origin+'/#guidance',name:'הדרכת הורים',serviceType:'הדרכת הורים',provider:{"@id":origin+'/#daniel'},areaServed:{"@type":"City",name:'קריית אונו'}});
-      }
-      if(sitePath==='/autism-parent-guidance/')graph.push({"@type":"Service",name:'הדרכת הורים לילדים על הרצף האוטיסטי',provider:{"@id":origin+'/#daniel'}});
-      const seo=`<link rel="canonical" href="${pageUrl}"><meta property="og:url" content="${pageUrl}"><meta property="og:image" content="${origin+'/'+imgPath}"><script type="application/ld+json">${JSON.stringify({'@context':'https://schema.org','@graph':graph}).replaceAll('<','\\u003c')}</script>`;
-      html=html.replace('<!-- PROD_SEO -->',seo);
-      fs.writeFileSync(dest,html);
-    }else fs.copyFileSync(abs,dest);
-  }
-}
-copy(process.cwd());
-const pages=[];function getPages(dir){for(const f of fs.readdirSync(dir,{withFileTypes:true})){if(f.isDirectory())getPages(path.join(dir,f.name));else if(f.name==='index.html'){const rel=path.relative(out,path.join(dir,f.name)).replaceAll('\\','/');pages.push(origin+'/'+(rel==='index.html'?'':rel.replace(/index\.html$/,'')));}}}
-getPages(out);
-const xml='<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'+pages.sort().map(p=>`  <url><loc>${p.replaceAll('&','&amp;')}</loc></url>`).join('\n')+'\n</urlset>\n';
-fs.writeFileSync(path.join(out,'sitemap.xml'),xml);
-fs.writeFileSync(path.join(out,'robots.txt'),`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
-console.log(`Built ${pages.length} pages into dist/ for ${origin}`);
+const robots='User-agent: *\nAllow: /\n\nUser-agent: OAI-SearchBot\nAllow: /\n'+(origin?'\nSitemap: '+origin+'/sitemap.xml\n':'');
+await fs.writeFile(path.join(dist,'robots.txt'),robots);
+if(origin){const sitemap='<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'+publicPaths.map(p=>`  <url><loc>${origin+p}</loc></url>`).join('\n')+'\n</urlset>\n';await fs.writeFile(path.join(dist,'sitemap.xml'),sitemap)}
+console.log('Production files:',dist,'\nDomain:',origin||'Not supplied — preview build, no canonical/sitemap generated');
